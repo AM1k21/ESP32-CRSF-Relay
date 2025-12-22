@@ -1,0 +1,31 @@
+# KiCad Ignore List
+*.lck
+*.swp
+*.bak
+*_autosave.kicad_sch
+*-bak
+*.kicad_pcb-bak
+*.kicad_sch-bak
+fp-info-cache
+
+# Local user settings (paths, last opened view, etc.)
+*.kicad_prl
+*.kicad_user
+
+# Netlists and reports (optional, usually generated on demand)
+*.net
+*.rpt
+*.xml
+
+# Gerbers (Don't version control these, use Releases instead)
+*-B_Cu.gbr
+*-B_Mask.gbr
+*-B_Paste.gbr
+*-B_SilkS.gbr
+*-F_Cu.gbr
+*-F_Mask.gbr
+*-F_Paste.gbr
+*-F_SilkS.gbr
+*-Edge_Cuts.gbr
+*-job.gbr
+*.drl
