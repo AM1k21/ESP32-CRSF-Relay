@@ -28,6 +28,8 @@
 
 The **ESP32-CRSF-Relay** is a CRSF relay node that extends the communication range of an ExpressLRS (ELRS) radio link. It acts as a transparent bridge: an ELRS receiver decodes incoming CRSF stick-channel frames from a remote transmitter and forwards them over UART to an ESP32. The ESP32 then re-packs and re-transmits those frames to a high-power ELRS TX module, which relays the signal onward to a drone or other vehicle.
 
+In real-world testing, the relay node approximately **doubles the effective communication range** compared to a direct single-link setup.
+
 ### Core Design Goals
 
 | Goal | Implementation |
@@ -90,8 +92,6 @@ ESP32-CRSF-Relay/
 
 ### 3.2 Dual-Core Task Distribution
 
-The ESP32's two cores are dedicated to separate concerns to guarantee real-time performance:
-
 | Core | Task | Priority | Responsibility |
 | :--- | :--- | :--- | :--- |
 | **Core 1** | `RadioTask` | 5 (High) | Read receiver UART, read module UART, send stick packets, half-duplex switching |
@@ -122,7 +122,7 @@ RadioTask (Core 1, infinite loop):
 | `RE_RX_PIN` | 33 | Input ← Receiver TX pad | `UART_NUM_2` | Receive CRSF frames from ELRS receiver |
 | `JR_TX_PIN` | 17 | Output → PCB Data Line | `UART_NUM_1` | Transmit stick packets to TX module |
 | `JR_RX_PIN` | 16 | Input ← PCB Data Line | `UART_NUM_1` | Receive telemetry/heartbeats from TX module |
-| `BUFFER_EN_PIN` | 25 | Output (Digital) | — | Controls half-duplex direction on the PCB buffer chip |
+| `BUFFER_EN_PIN` | 25 | Output (Digital) | — | Controls half-duplex direction on the SN74HC125DR buffer |
 
 ### 4.2 UART Configuration
 
@@ -137,20 +137,35 @@ RadioTask (Core 1, infinite loop):
 | Signal Inversion | None | **RXD + TXD inverted** |
 | RX Buffer Size | 2048 bytes (`BUF_SIZE * 2`) | 2048 bytes (`BUF_SIZE * 2`) |
 | TX Buffer Size | 0 (blocking write) | 0 (blocking write) |
-
+| 
 > **Note:** The JR module UART uses inverted signals (`uart_set_line_inverse`) because the CRSF protocol on JR-bay modules uses inverted UART signaling.
 
-### 4.3 Half-Duplex Switching Protocol
+### 4.3 Tested Hardware
 
-The TX module communicates over a single data line (half-duplex). The ESP32 uses `BUFFER_EN_PIN` (GPIO 25) to control the direction of a buffer chip on the custom PCB:
+#### Input Receivers (ELRS RX)
+
+| Receiver | Frequency | Notes |
+| :--- | :--- | :--- |
+| **HGLRC ELRS 2.4G** | 2.4 GHz | Tested and confirmed working |
+| **Radiomaster XR1 Nano ELRS** | 868 MHz | Dual-band capable (868 MHz / 2.4 GHz), tested on 868 MHz |
+
+#### Output TX Module
+
+| Module | Notes |
+| :--- | :--- |
+| **Emax Aeris Link Nano** | Only tested TX module; requires external power at high output levels |
+
+### 4.4 Half-Duplex Switching Protocol
+
+The TX module communicates over a single data line (half-duplex). The ESP32 uses `BUFFER_EN_PIN` (GPIO 25) to control the direction of the **SN74HC125DR** quad tri-state buffer on the custom PCB:
 
 ```
 sendStickPacket():
-  1. BUFFER_EN_PIN → LOW          // Switch buffer to TX mode
+  1. BUFFER_EN_PIN → LOW          // Enable buffer output (TX mode)
   2. delayMicroseconds(2)         // Allow settling time
   3. uart_write_bytes(packet, 26) // Transmit 26-byte CRSF frame
   4. delayMicroseconds(680)       // Wait for transmission to complete
-  5. BUFFER_EN_PIN → HIGH         // Switch buffer back to RX mode
+  5. BUFFER_EN_PIN → HIGH         // Disable buffer output (RX mode / high-impedance)
 ```
 
 **Timing breakdown:**
@@ -259,7 +274,7 @@ Payload byte offsets (from byte [i+3]):
 | `RadioTask(void*)` | Infinite loop: process receiver, process module, keepalive TX | Core 1 |
 | `processReceiverInput()` | Reads `RE_UART`, scans for CRSF stick frames, unpacks 16 channels | Core 1 |
 | `processJrModule()` | Reads `JR_UART`, handles heartbeats (triggers TX) and link stats | Core 1 |
-| `sendStickPacket()` | Builds 26-byte CRSF frame, performs half-duplex TX | Core 1 |
+| `sendStickPacket()` | Builds 26-byte CRSF frame, performs half-duplex TX via SN74HC125DR | Core 1 |
 | `packCrsfChannels(payload, channels)` | Bit-packs 16 × 11-bit channels into 22 bytes, applies throttle limit | Core 1 |
 | `calc_crc8(payload, length)` | Computes CRC-8 with polynomial `0xD5` | Core 1 |
 | `handleRoot()` | Serves the embedded HTML dashboard | Core 0 |
@@ -367,9 +382,22 @@ The web interface is a single-page application embedded in `PROGMEM` (~3.5 KB) w
 
 ### 8.1 Purpose
 
-The ESP32 uses full-duplex UARTs (separate TX and RX lines), while ELRS TX modules typically use a single half-duplex data line for both sending and receiving. The custom PCB bridges this gap using a **tri-state buffer chip**.
+The ESP32 uses full-duplex UARTs (separate TX and RX lines), while ELRS TX modules typically use a single half-duplex data line for both sending and receiving. The custom PCB bridges this gap using an **SN74HC125DR** quad tri-state buffer.
 
-### 8.2 KiCad Project Files
+### 8.2 Buffer IC: SN74HC125DR
+
+| Parameter | Value |
+| :--- | :--- |
+| Manufacturer | Texas Instruments |
+| Package | SOIC-14 |
+| Type | Quad Bus Buffer Gate with 3-State Outputs |
+| Supply Voltage | 2V – 6V |
+| Propagation Delay | ~7 ns (typ. at 4.5V) |
+| Output Enable | Active LOW (directly driven by `BUFFER_EN_PIN` / GPIO 25) |
+
+The SN74HC125DR contains four independent tri-state buffer gates. Each gate has an output enable pin (`OE`, active low). When `OE` is LOW, the buffer actively drives its output; when `OE` is HIGH, the output enters a high-impedance state, effectively disconnecting it from the data line.
+
+### 8.3 KiCad Project Files
 
 | File | Description |
 | :--- | :--- |
@@ -377,27 +405,26 @@ The ESP32 uses full-duplex UARTs (separate TX and RX lines), while ELRS TX modul
 | `PCB/halfduplextranslator.kicad_pcb` | PCB layout |
 | `PCB/halfduplextranslator.kicad_pro` | KiCad project metadata |
 
-### 8.3 Operating Principle
+### 8.4 Operating Principle
 
 ```
 ESP32 GPIO 25 (BUFFER_EN):
-  LOW  → Buffer enabled for TX direction (ESP32 → Module)
-  HIGH → Buffer in high-impedance / RX mode (Module → ESP32)
+  LOW  → Buffer output enabled (TX mode: ESP32 → Module)
+  HIGH → Buffer output high-impedance (RX mode: Module → ESP32)
 
-ESP32 GPIO 17 (JR_TX) ──┐
-                         ├──► Buffer ──► Single Data Line ──► TX Module
-ESP32 GPIO 16 (JR_RX) ──┘
+ESP32 GPIO 17 (JR_TX) ──► SN74HC125DR Gate ──► Single Data Line ──► TX Module
+ESP32 GPIO 16 (JR_RX) ◄────────────────────── Single Data Line ◄── TX Module
 ```
 
 When transmitting:
-1. `BUFFER_EN` goes LOW → buffer passes ESP32 TX to the data line
+1. `BUFFER_EN` goes LOW → SN74HC125DR gate enables, passes ESP32 TX to the data line
 2. Data is clocked out at 400 kbaud (inverted)
 3. After transmission completes (~680 µs for 26 bytes), `BUFFER_EN` goes HIGH
-4. The buffer enters receive mode, allowing telemetry from the module to reach ESP32 RX
+4. The buffer output enters high-impedance, allowing telemetry from the module to reach ESP32 RX directly
 
-### 8.4 When the PCB Is Not Needed
+### 8.5 When the PCB Is Not Needed
 
-If using an ELRS **receiver flashed as a TX module** (instead of a dedicated TX module), the PCB is unnecessary because receivers have separate TX and RX UART pads.
+If using an ELRS **receiver flashed as a TX module** (instead of a dedicated TX module), the PCB is unnecessary because receivers have separate TX and RX UART pads — full-duplex communication is native.
 
 ---
 
@@ -450,7 +477,7 @@ const char* password = "";                 // Set a password for secured access
 ### 10.2 Pin Mapping
 
 ```cpp
-#define BUFFER_EN_PIN 25    // Half-duplex direction control
+#define BUFFER_EN_PIN 25    // Half-duplex direction control (SN74HC125DR OE)
 #define JR_TX_PIN     17    // TX to module (via PCB)
 #define JR_RX_PIN     16    // RX from module (via PCB)
 #define RE_TX_PIN     32    // TX to receiver
@@ -491,7 +518,7 @@ const char* password = "";                 // Set a password for secured access
 | :--- | :--- |
 | TX module not powered | Provide adequate external power (see power warning) |
 | PCB not connected | Check PCB wiring to GPIO 16, 17, and 25 |
-| Buffer chip failure | Verify the buffer IC and PCB solder joints |
+| SN74HC125DR failure | Verify the buffer IC solder joints and supply voltage |
 
 ### Status: DRONE LOST
 
