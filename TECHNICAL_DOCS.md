@@ -1,6 +1,6 @@
 # ESP32-CRSF-Relay — Technical Documentation
 
-> **Version:** 1.0  
+> **Version:** 1.1  
 > **Last Updated:** 2025-12-22  
 > **Platform:** ESP32 (WROOM-32) · Arduino Framework  
 > **Language:** C++ (`.ino`)  
@@ -28,7 +28,7 @@
 
 The **ESP32-CRSF-Relay** is a CRSF relay node that extends the communication range of an ExpressLRS (ELRS) radio link. It acts as a transparent bridge: an ELRS receiver decodes incoming CRSF stick-channel frames from a remote transmitter and forwards them over UART to an ESP32. The ESP32 then re-packs and re-transmits those frames to a high-power ELRS TX module, which relays the signal onward to a drone or other vehicle.
 
-In real-world testing, the relay node approximately **doubles the effective communication range** compared to a direct single-link setup.
+In real-world testing, the relay node approximately **doubles the effective communication range** compared to a direct single-link setup. No noticeable latency is introduced by the relay — the forwarding loop runs at sub-millisecond intervals on a dedicated core.
 
 ### Core Design Goals
 
@@ -110,6 +110,10 @@ RadioTask (Core 1, infinite loop):
 └── vTaskDelay(1 ms)          // Yield briefly
 ```
 
+### 3.4 Latency
+
+The relay introduces **no noticeable latency**. The `RadioTask` loop executes every ~1 ms (the `vTaskDelay` yield), and frame forwarding is triggered immediately upon receiving a heartbeat from the TX module. The theoretical added latency is bounded by the loop period (~1 ms) plus the UART transmission time (~650 µs for 26 bytes at 400 kbaud), totaling under 2 ms per hop.
+
 ---
 
 ## 4. Hardware Interface
@@ -137,7 +141,7 @@ RadioTask (Core 1, infinite loop):
 | Signal Inversion | None | **RXD + TXD inverted** |
 | RX Buffer Size | 2048 bytes (`BUF_SIZE * 2`) | 2048 bytes (`BUF_SIZE * 2`) |
 | TX Buffer Size | 0 (blocking write) | 0 (blocking write) |
-| 
+
 > **Note:** The JR module UART uses inverted signals (`uart_set_line_inverse`) because the CRSF protocol on JR-bay modules uses inverted UART signaling.
 
 ### 4.3 Tested Hardware
@@ -155,7 +159,23 @@ RadioTask (Core 1, infinite loop):
 | :--- | :--- |
 | **Emax Aeris Link Nano** | Only tested TX module; requires external power at high output levels |
 
-### 4.4 Half-Duplex Switching Protocol
+### 4.4 Power Supply
+
+The entire relay node is powered from a **2S LiPo battery** (7.4V nominal, 5–8.4V range):
+
+```
+2S LiPo Battery (7.4V)
+├──► Step-Down Regulator ──► ESP32 (5V / 3.3V via onboard regulator)
+└──► XT30 Port ──────────► ELRS TX Module (direct battery voltage)
+```
+
+- The **ESP32** is powered through a step-down (buck) module that converts the 2S battery voltage to a level suitable for the ESP32's onboard voltage regulator.
+- The **TX module** (e.g., Emax Aeris Link Nano) is powered directly from the battery via its XT30 connector, which supports the full 2S voltage range.
+- The **ELRS receiver** draws power from the ESP32's 3.3V or 5V output pin (minimal current draw).
+
+> ⚠️ **Do not power high-output TX modules (>250 mW) from USB or the ESP32's voltage pins.** Modules like the Emax Aeris can draw up to 2A at 1W+, which will cause brownouts, resets, and failsafes.
+
+### 4.5 Half-Duplex Switching Protocol
 
 The TX module communicates over a single data line (half-duplex). The ESP32 uses `BUFFER_EN_PIN` (GPIO 25) to control the direction of the **SN74HC125DR** quad tri-state buffer on the custom PCB:
 
@@ -394,8 +414,9 @@ The ESP32 uses full-duplex UARTs (separate TX and RX lines), while ELRS TX modul
 | Supply Voltage | 2V – 6V |
 | Propagation Delay | ~7 ns (typ. at 4.5V) |
 | Output Enable | Active LOW (directly driven by `BUFFER_EN_PIN` / GPIO 25) |
+| Gates Used | **1 of 4** (single gate for TX direction control) |
 
-The SN74HC125DR contains four independent tri-state buffer gates. Each gate has an output enable pin (`OE`, active low). When `OE` is LOW, the buffer actively drives its output; when `OE` is HIGH, the output enters a high-impedance state, effectively disconnecting it from the data line.
+The SN74HC125DR contains four independent tri-state buffer gates. Only **one gate** is used in this design — it controls the TX direction from the ESP32 to the module data line. The remaining three gates are unused. Each gate has an output enable pin (`OE`, active low). When `OE` is LOW, the buffer actively drives its output; when `OE` is HIGH, the output enters a high-impedance state, effectively disconnecting it from the data line.
 
 ### 8.3 KiCad Project Files
 
@@ -412,12 +433,15 @@ ESP32 GPIO 25 (BUFFER_EN):
   LOW  → Buffer output enabled (TX mode: ESP32 → Module)
   HIGH → Buffer output high-impedance (RX mode: Module → ESP32)
 
-ESP32 GPIO 17 (JR_TX) ──► SN74HC125DR Gate ──► Single Data Line ──► TX Module
-ESP32 GPIO 16 (JR_RX) ◄────────────────────── Single Data Line ◄── TX Module
+                          ┌────────────────────┐
+ESP32 GPIO 17 (JR_TX) ──►│ SN74HC125DR Gate 1  │──► Single Data Line ──► TX Module
+                          │ OE = GPIO 25        │
+                          └────────────────────┘
+ESP32 GPIO 16 (JR_RX) ◄───────────────────────────── Single Data Line ◄── TX Module
 ```
 
 When transmitting:
-1. `BUFFER_EN` goes LOW → SN74HC125DR gate enables, passes ESP32 TX to the data line
+1. `BUFFER_EN` goes LOW → SN74HC125DR gate 1 enables, passes ESP32 TX to the data line
 2. Data is clocked out at 400 kbaud (inverted)
 3. After transmission completes (~680 µs for 26 bytes), `BUFFER_EN` goes HIGH
 4. The buffer output enters high-impedance, allowing telemetry from the module to reach ESP32 RX directly
@@ -439,7 +463,13 @@ If using an ELRS **receiver flashed as a TX module** (instead of a dedicated TX 
   - `WiFi.h` (ESP32 WiFi)
   - `WebServer.h` (ESP32 HTTP server)
 
-### 9.2 Upload Settings
+### 9.2 ELRS Receiver Configuration
+
+Both the input ELRS receiver and the drone-side ELRS receiver must be configured with matching **bind phrases** in the ELRS Configurator. This project uses bind phrases (not traditional binding buttons) to pair receivers with their respective transmitters.
+
+> **Tip:** Make sure the bind phrase on the relay's input receiver matches your handheld transmitter, and the bind phrase on the drone's receiver matches the relay's TX module output.
+
+### 9.3 Upload Settings
 
 | Setting | Value |
 | :--- | :--- |
@@ -450,7 +480,7 @@ If using an ELRS **receiver flashed as a TX module** (instead of a dedicated TX 
 | Flash Size | 4 MB (default) |
 | Partition Scheme | Default 4MB with spiffs |
 
-### 9.3 Steps
+### 9.4 Steps
 
 1. Open `code/esp32code.ino` in Arduino IDE
 2. Select the correct board and COM port
@@ -477,7 +507,7 @@ const char* password = "";                 // Set a password for secured access
 ### 10.2 Pin Mapping
 
 ```cpp
-#define BUFFER_EN_PIN 25    // Half-duplex direction control (SN74HC125DR OE)
+#define BUFFER_EN_PIN 25    // Half-duplex direction control (SN74HC125DR OE, Gate 1)
 #define JR_TX_PIN     17    // TX to module (via PCB)
 #define JR_RX_PIN     16    // RX from module (via PCB)
 #define RE_TX_PIN     32    // TX to receiver
@@ -509,23 +539,24 @@ const char* password = "";                 // Set a password for secured access
 | :--- | :--- |
 | Receiver not powered | Check 3.3V/5V supply to the ELRS receiver |
 | Wrong wiring | Verify GPIO 33 ← Receiver TX, GPIO 32 → Receiver RX |
-| Receiver not bound | Bind the ELRS receiver to your transmitter |
+| Receiver not bound | Verify the bind phrase matches between receiver and transmitter |
 | Baud rate mismatch | Ensure the receiver is configured for CRSF output at 420 kbaud |
 
 ### Status: MODULE OFF
 
 | Possible Cause | Solution |
 | :--- | :--- |
-| TX module not powered | Provide adequate external power (see power warning) |
+| TX module not powered | Provide adequate external power via 2S LiPo battery (see Section 4.4) |
 | PCB not connected | Check PCB wiring to GPIO 16, 17, and 25 |
 | SN74HC125DR failure | Verify the buffer IC solder joints and supply voltage |
+| Step-down regulator issue | Confirm the buck module is outputting correct voltage to the ESP32 |
 
 ### Status: DRONE LOST
 
 | Possible Cause | Solution |
 | :--- | :--- |
 | Drone out of range | Move the drone closer or increase TX power |
-| Drone receiver not bound | Bind the drone's ELRS receiver to the TX module |
+| Drone receiver not bound | Verify bind phrase matches between drone receiver and relay TX module |
 | Telemetry disabled | Enable telemetry in ELRS Lua script or configurator |
 
 ### Brownouts / Resets
@@ -534,6 +565,7 @@ const char* password = "";                 // Set a password for secured access
 | :--- | :--- |
 | High-power module on USB | **Never** power modules >250 mW from USB. Use a 2S battery (5–21V) via XT30 |
 | Insufficient current | Ensure your power source can deliver ≥2A for 1W+ modules |
+| Step-down overloaded | Make sure the buck converter is rated for the combined ESP32 + peripherals draw |
 
 ### Dashboard Not Loading
 
