@@ -55,3 +55,22 @@ Once powered on, the ESP32 will broadcast a WiFi network.
 ## 📂 PCB Design
 The `PCB` folder contains KiCad project files for the **Half-Duplex Translator**.
 * **Why is this needed?** ESP32 UARTs use two separate wires (TX and RX). Most RC Modules use a single shared wire for both sending commands and receiving telemetry. This PCB uses a buffer chip to merge these signals safely.
+
+## 📚 Technical Docs (MkDocs)
+
+A fully structured documentation site is now available in the `docs` folder and configured by `mkdocs.yml`.
+
+### Run locally
+
+```powershell
+pip install -r requirements-docs.txt
+mkdocs serve
+```
+
+Then open: `http://127.0.0.1:8000`
+
+### Build static site
+
+```powershell
+mkdocs build
+```

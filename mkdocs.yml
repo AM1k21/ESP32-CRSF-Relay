@@ -1,0 +1,53 @@
+site_name: ESP32-CRSF-Relay Technical Docs
+site_description: Technical documentation for the ESP32 CRSF relay node
+repo_name: ESP32-CRSF-Relay-main
+
+nav:
+  - Home: index.md
+  - System Architecture: architecture.md
+  - Hardware Interface: hardware.md
+  - CRSF Protocol: crsf-protocol.md
+  - Firmware Reference: firmware-reference.md
+  - Web Dashboard and API: web-dashboard-api.md
+  - PCB Design: pcb-design.md
+  - Build and Flash: build-flash.md
+  - Configuration: configuration.md
+  - Troubleshooting: troubleshooting.md
+
+theme:
+  name: material
+  language: en
+  palette:
+    - scheme: default
+      primary: teal
+      accent: amber
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.top
+    - toc.follow
+    - search.highlight
+    - content.code.copy
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.tabbed:
+      alternate_style: true
+
+plugins:
+  - search
+
+extra_css:
+  - assets/stylesheets/extra.css

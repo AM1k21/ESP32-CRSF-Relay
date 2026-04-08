@@ -1,5 +1,17 @@
 # ESP32-CRSF-Relay — Technická dokumentace
 
+> Tento soubor je nyní považován za legacy verzi.
+>
+> Nová, strukturovaná dokumentace je připravena pro MkDocs v adresáři `docs/`.
+>
+> Lokální spuštění:
+> ```powershell
+> pip install -r requirements-docs.txt
+> mkdocs serve
+> ```
+>
+> Vstupní stránka nové dokumentace: `docs/index.md`
+
 > **Verze:** 1.1  
 > **Naposledy aktualizováno:** 2025-12-22  
 > **Platforma:** ESP32 (WROOM-32) · Arduino Framework  

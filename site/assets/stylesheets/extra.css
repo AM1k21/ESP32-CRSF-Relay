@@ -1,0 +1,24 @@
+:root {
+  --md-primary-fg-color: #006d77;
+  --md-accent-fg-color: #e29500;
+}
+
+.md-typeset h1 {
+  font-weight: 800;
+  letter-spacing: 0.2px;
+}
+
+.md-typeset h2 {
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+  padding-bottom: 0.2rem;
+}
+
+.md-typeset table:not([class]) {
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.md-typeset .admonition,
+.md-typeset details {
+  border-radius: 8px;
+}
